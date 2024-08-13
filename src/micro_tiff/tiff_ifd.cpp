@@ -327,7 +327,7 @@ TiffErrorCode tiff_ifd::load_ifd(uint64_t ifd_offset)
 		classic_tag.clear();
 	}
 
-	//the judgement number 1 and 1000 is from ImageJ code : "TiffDecoder.java"__line368
+	//the judgment number 1 and 1000 is from ImageJ code : "TiffDecoder.java"__line368
 	if (num_of_tags < 1 || num_of_tags > 1000)
 		return TiffErrorCode::TIFF_ERR_TAG_SIZE_INCORRECT;
 
@@ -451,7 +451,7 @@ int32_t tiff_ifd::wr_block(uint32_t block_no, uint64_t buf_size, uint8_t* buf)
 	_fseeki64(_tiff_hdl, 0, SEEK_END);
 	uint64_t cur_offset = _ftelli64(_tiff_hdl);
 	if (block_no >= block_count) {
-		TiffErrorCode::TIFF_ERR_BLOCK_OUT_OF_RANGE;
+		return TiffErrorCode::TIFF_ERR_BLOCK_OUT_OF_RANGE;
 	}
 
 	if (_big_tiff){
@@ -481,7 +481,7 @@ int32_t tiff_ifd::rd_block(uint32_t block_no, uint64_t &buf_size, uint8_t* buf)
 {
 	uint64_t cur_offset;
 	if (block_no >= block_count) {
-		TiffErrorCode::TIFF_ERR_BLOCK_OUT_OF_RANGE;
+		return TiffErrorCode::TIFF_ERR_BLOCK_OUT_OF_RANGE;
 	}
 
 	if (_big_tiff) {
