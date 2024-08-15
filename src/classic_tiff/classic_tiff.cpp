@@ -2,7 +2,6 @@
 #include "..\micro_tiff\micro_tiff.h"
 #include "..\lzw\lzw.h"
 #include "..\lzw\data_predict.h"
-#include "classic_def.h"
 
 #include <omp.h>
 #include <io.h>
@@ -37,11 +36,10 @@ int32_t save_with_lzw_horidif(int32_t hdl, uint32_t ifd_no, void* buf, ImageInfo
 	int32_t threads = (min)(omp_get_num_procs() / 2, strip_count);
 	threads = (max)(1, threads);
 
-	size_t header_size = sizeof(uint64_t);	 //first 8 bytes indicate the actual size
-
 	size_t src_strip_size = info.block_height * (size_t)block_stride;
+	//sometimes LZW compress will make data more large, so alloc more buffer
 	size_t strip_alloc_size = (size_t)(src_strip_size * 1.5);
-	uint8_t* total_buffer = (uint8_t*)calloc(strip_count, (strip_alloc_size + header_size));
+	uint8_t* total_buffer = (uint8_t*)calloc(threads, strip_alloc_size);
 	if (total_buffer == nullptr) {
 		return ErrorCode::ERR_BUFFER_IS_NULL;
 	}
@@ -68,29 +66,20 @@ int32_t save_with_lzw_horidif(int32_t hdl, uint32_t ifd_no, void* buf, ImageInfo
 				continue;
 			}
 
-			uint8_t* dst_buf = total_buffer + i * (strip_alloc_size + header_size);
+			int thread_num = omp_get_thread_num();
+
+			uint8_t* dst_buf = total_buffer + thread_num * strip_alloc_size;
 			uint64_t raw_data_used_size, dst_len;
-			int encode_status = LZWEncode(src_buf, src_len, &raw_data_used_size, dst_buf + header_size, strip_alloc_size, &dst_len);
+			int encode_status = LZWEncode(src_buf, src_len, &raw_data_used_size, dst_buf, strip_alloc_size, &dst_len);
 			if (encode_status != 1 || raw_data_used_size != src_len) {
 				status = ErrorCode::ERR_COMPRESS_LZW_ERROR;
 			}
-			else {
-				*((uint64_t*)(dst_buf)) = dst_len;
+			status = micro_tiff_SaveBlock(hdl, (uint16_t)ifd_no, i, dst_len, dst_buf);
+			if (status != 0) {
+				continue;
 			}
-		}
-	}
-
-	if (status == ErrorCode::STATUS_OK)
-	{
-		for (int32_t i = 0; i < strip_count; i++)
-		{
-			uint8_t* dst_buf = total_buffer + i * (strip_alloc_size + header_size);
-			uint64_t size = *((uint64_t*)dst_buf);
-
-			status = micro_tiff_SaveBlock(hdl, (uint16_t)ifd_no, i, size, dst_buf + header_size);
-			if (status != ErrorCode::STATUS_OK) {
-				break;
-			}
+			//make source buffer restore to original state
+			status = horizontal_acc(src_buf, strip_height, info.image_width, info.image_byte_count, info.samples_per_pixel, false);
 		}
 	}
 
@@ -170,9 +159,9 @@ int32_t tiff_single::open_tiff(const wchar_t* file_name, tiff::OpenMode mode)
 		return ErrorCode::ERR_FILE_PATH_ERROR;
 	}
 
-	wchar_t* extension = wcschr(name, L'.') + 1;
-	if (!extension || !(extension != L"tiff" && extension != L"tif"))
-		return ErrorCode::ERR_FILE_PATH_ERROR;
+	//wchar_t* extension = wcschr(name, L'.') + 1;
+	//if (!extension || !(extension != L"tiff" && extension != L"tif"))
+	//	return ErrorCode::ERR_FILE_PATH_ERROR;
 
 	uint8_t open_flag = OPENFLAG_READ;
 	switch (mode)
@@ -210,7 +199,6 @@ int32_t tiff_single::close_tiff()
 			micro_tiff_CloseIFD(_hdl, i);
 		}
 	}
-	_infos.clear();
 	micro_tiff_Close(_hdl);
 	return ErrorCode::STATUS_OK;
 }
@@ -229,13 +217,6 @@ int32_t tiff_single::create_image(tiff::SingleImageInfo image_info)
 	info_conversion(image_info, info);
 
 	int32_t ifd_no = micro_tiff_CreateIFD(_hdl, info);
-	if (ifd_no < 0)
-	{
-		return ifd_no;
-	}
-
-	_infos[ifd_no] = image_info;
-
 	return ifd_no;
 }
 
@@ -244,13 +225,11 @@ int32_t tiff_single::save_image_data(uint32_t image_number, void* image_data, ui
 	if (_openMode == tiff::OpenMode::READ_ONLY_MODE)
 		return ErrorCode::ERR_OPENMODE;
 
-	auto iter = _infos.find(image_number);
-	if (iter == _infos.end())
-		return ErrorCode::ERR_SAVEDATA_WITHOUT_INFO;
-
-	tiff::SingleImageInfo image_info = _infos[image_number];
 	ImageInfo info;
-	info_conversion(image_info, info);
+	int32_t status = micro_tiff_GetImageInfo(_hdl, image_number, info);
+	if (status != ErrorCode::STATUS_OK) {
+		return status;
+	}
 
 	//size_t size = strlen(make);
 	//micro_tiff_tiffSetTag(_hdl, _ifd_no, TIFFTAG_MAKE, TagDataType::TIFF_ASCII, (uint32_t)size, (void*)make);
@@ -272,11 +251,13 @@ int32_t tiff_single::save_image_data(uint32_t image_number, void* image_data, ui
 	}
 
 	void* buf = image_data;
+	std::unique_ptr<void, std::function<void(void*)>> auto_buffer(nullptr, free);
 	if (block_stride != stride)
 	{
-		buf = malloc(static_cast<size_t>(block_size));
-	if (buf == nullptr)
-		return ErrorCode::ERR_BUFFER_IS_NULL;
+		auto_buffer.reset(malloc(static_cast<size_t>(block_size)));
+		buf = auto_buffer.get();
+		if (buf == nullptr)
+			return ErrorCode::ERR_BUFFER_IS_NULL;
 
 		for (uint32_t i = 0; i < info.image_height; i++)
 		{
@@ -284,7 +265,6 @@ int32_t tiff_single::save_image_data(uint32_t image_number, void* image_data, ui
 		}
 	}
 
-	int32_t status = ErrorCode::STATUS_OK;
 	switch (info.compression)
 	{
 	case COMPRESSION_NONE:
@@ -303,8 +283,6 @@ int32_t tiff_single::save_image_data(uint32_t image_number, void* image_data, ui
 		break;
 	}
 
-	if (buf != image_data)
-		free(buf);
 	return status;
 }
 
@@ -314,13 +292,6 @@ int32_t tiff_single::get_image_info(uint32_t image_number, tiff::SingleImageInfo
 		return ErrorCode::ERR_OPENMODE;
 
 	ImageInfo image_info;
-	auto iter = _infos.find(image_number);
-	if (iter != _infos.end())
-	{
-		*info = iter->second;
-		return ErrorCode::STATUS_OK;
-	}
-
 	int32_t status = micro_tiff_GetImageInfo(_hdl, image_number, image_info);
 	if (status != ErrorCode::STATUS_OK)
 	{
@@ -380,19 +351,11 @@ int32_t tiff_single::load_image_data(uint32_t image_number, void* image_data, ui
 		return ErrorCode::ERR_OPENMODE;
 	}
 
-	int32_t status = ErrorCode::STATUS_OK;
 	bool is_big_endian = false;
 	ImageInfo image_info;
-	auto iter = _infos.find(image_number);
-	if (iter == _infos.end())
-	{
-		status = micro_tiff_GetImageInfo(_hdl, image_number, image_info);
-		if (status != ErrorCode::STATUS_OK) {
-			return status;
-		}
-	}
-	else {
-		info_conversion(iter->second, image_info);
+	int32_t status = micro_tiff_GetImageInfo(_hdl, image_number, image_info);
+	if (status != ErrorCode::STATUS_OK) {
+		return status;
 	}
 
 	tiff::PixelType pixel_type = image_info.image_byte_count == 1 ? tiff::PixelType::PIXEL_UINT8 : tiff::PixelType::PIXEL_UINT16;
@@ -416,99 +379,162 @@ int32_t tiff_single::load_image_data(uint32_t image_number, void* image_data, ui
 	uint32_t rows = (uint32_t)ceil((double)image_info.image_height / image_info.block_height);
 	uint32_t columns = (uint32_t)ceil(image_info.image_width / image_info.block_width);
 
-	unique_ptr<void, function<void(void*)>> auto_block_buffer(malloc(complete_block_size), free);
-	unique_ptr<void, function<void(void*)>> auto_encode_buffer(malloc((size_t)(complete_block_size * 1.5)), free);
+	uint32_t total_count = rows * columns;
 
-	void* block_buf = auto_block_buffer.get();
-	void* encode_buf = auto_encode_buffer.get();
-	if (block_buf == nullptr || encode_buf == nullptr)
-		return ErrorCode::ERR_BUFFER_IS_NULL;
-
-	for (uint32_t column = 0; column < columns; column++)
+	if (image_info.compression == COMPRESSION_NONE)
 	{
-		uint32_t block_width = image_info.block_width * (column + 1) > image_info.image_width ? image_info.image_width - image_info.block_width * column : image_info.block_width;
-		uint32_t block_stride = block_width * image_info.image_byte_count * image_info.samples_per_pixel;
-		for (uint32_t row = 0; row < rows; row++)
+		unique_ptr<void, function<void(void*)>> auto_raw_block_buffer(malloc(complete_block_size), free);
+		void* raw_block_buf = auto_raw_block_buffer.get();
+		if (raw_block_buf == nullptr)
+			return ErrorCode::ERR_BUFFER_IS_NULL;
+
+		for (int i = 0; i < (int)total_count; i++)
 		{
+			int column = i % columns;
+			int row = i / columns;
+
+			uint32_t block_width = image_info.block_width * (column + 1) > image_info.image_width ? image_info.image_width - image_info.block_width * column : image_info.block_width;
+			uint32_t block_stride = block_width * image_info.image_byte_count * image_info.samples_per_pixel;
+
 			uint32_t block_height = image_info.block_height * (row + 1) > image_info.image_height ? image_info.image_height - image_info.block_height * row : image_info.block_height;
 			uint32_t block_size = block_height * block_stride;
 
-			uint64_t size;
-			uint32_t block_no = column + row * columns;
+			uint32_t block_no = (uint32_t)i;
 
-			if (image_info.compression == COMPRESSION_NONE) {
-				status = micro_tiff_LoadBlock(_hdl, image_number, block_no, size, block_buf);
-			}
-			else
-			{
-				uint64_t encode_size;
-				status = micro_tiff_LoadBlock(_hdl, image_number, block_no, encode_size, encode_buf);
-				if (status != ErrorCode::STATUS_OK) {
-					return status;
-				}
-
-				switch (image_info.compression)
-				{
-				case COMPRESSION_JPEG:
-					//int width, height, samples;
-					//status = jpeg_decompress((unsigned char*)block_buf, (unsigned char*)encode_buf, (unsigned long)encode_size, &width, &height, &samples);
-					//size = (uint64_t)width * height * samples;
-					break;
-				case COMPRESSION_LZW:
-					try
-					{
-						size = LZWDecode(encode_buf, encode_size, block_buf, block_size);
-						if (size == block_size)
-							status = ErrorCode::STATUS_OK;
-						else
-							status = ErrorCode::ERR_BUFFER_SIZE_ERROR;
-						if (status == ErrorCode::STATUS_OK && image_info.predictor == PREDICTOR_HORIZONTAL)
-						{
-							int hori_status = horizontal_acc(block_buf, block_height, block_width, image_info.image_byte_count, image_info.samples_per_pixel, is_big_endian);
-							if (hori_status != 0)
-							{
-								status = ErrorCode::ERR_DECOMPRESS_LZW_FAILED;
-								break;
-							}
-						}
-					}
-					catch (exception e)
-					{
-						status = ErrorCode::ERR_DECOMPRESS_LZW_FAILED;
-						break;
-					}
-					break;
-				case COMPRESSION_ADOBE_DEFLATE:
-				case COMPRESSION_DEFLATE:
-				{
-					//size = block_size;
-					//int zlib_status = uncompress((unsigned char*)block_buf, (unsigned long*)&size, (unsigned char*)encode_buf, (unsigned long)encode_size);
-					//if (zlib_status != 0)
-					//{
-					//	status = ErrorCode::ERR_DECOMPRESS_ZLIB_FAILED;
-					//	break;
-					//}
-				}
-					break;
-				default:
-					status = ErrorCode::ERR_COMPRESS_TYPE_NOTSUPPORT;
-					break;
-				}
-			}
+			uint64_t size = complete_block_size;
+			status = micro_tiff_LoadBlock(_hdl, image_number, block_no, size, raw_block_buf);
 			if (status == ErrorCode::STATUS_OK)
 			{
 				for (uint32_t h = 0; h < block_height; h++)
 				{
-					uint8_t* src_ptr = (uint8_t*)block_buf + h * block_width * image_info.samples_per_pixel;
+					uint8_t* src_ptr = (uint8_t*)raw_block_buf + h * block_width * image_info.samples_per_pixel;
 					uint8_t* dst_ptr = (uint8_t*)image_data + (row * image_info.block_height + h) * stride + column * complete_block_pixel_width;
 					memcpy_s(dst_ptr, block_width * image_info.samples_per_pixel, src_ptr, block_width * image_info.samples_per_pixel);
 				}
 			}
-			if (status != ErrorCode::STATUS_OK) {
+			else
 				return status;
+		}
+		return ErrorCode::STATUS_OK;
+	}
+
+	//Get max block byte size
+	uint64_t max_block_byte_size = 0;
+	for (uint32_t i = 0; i < total_count; i++)
+	{
+		uint64_t size = 0;
+		status = micro_tiff_LoadBlock(_hdl, image_number, i, size, nullptr);
+		if (status != ErrorCode::STATUS_OK)
+			return status;
+		if (size == 0)
+			return ErrorCode::TIFF_ERR_BLOCK_SIZE_IN_IFD_IS_EMPTY;
+		if (size > max_block_byte_size)
+			max_block_byte_size = size;
+	}
+
+	int32_t threads = (min)(omp_get_num_procs() / 2, (int32_t)total_count);
+	threads = (max)(1, threads);
+
+	unique_ptr<void, function<void(void*)>> auto_block_buffer(malloc(complete_block_size * threads), free);
+	unique_ptr<void, function<void(void*)>> auto_encode_buffer(malloc((size_t)(max_block_byte_size * threads)), free);
+
+	void* block_buf = auto_block_buffer.get();
+	void* encode_buf = auto_encode_buffer.get();
+
+	if (block_buf == nullptr || encode_buf == nullptr)
+		return ErrorCode::ERR_BUFFER_IS_NULL;
+
+	if (!omp_in_parallel())
+		omp_set_num_threads(threads);
+
+#pragma omp parallel for
+	for (int i = 0; i < (int)total_count; i++)
+	{
+		if (status != ErrorCode::STATUS_OK)
+			continue;
+
+		int column = i % columns;
+		int row = i / columns;
+
+		uint32_t block_width = image_info.block_width * (column + 1) > image_info.image_width ? image_info.image_width - image_info.block_width * column : image_info.block_width;
+		uint32_t block_stride = block_width * image_info.image_byte_count * image_info.samples_per_pixel;
+
+		uint32_t block_height = image_info.block_height * (row + 1) > image_info.image_height ? image_info.image_height - image_info.block_height * row : image_info.block_height;
+		uint32_t block_size = block_height * block_stride;
+
+		uint32_t block_no = (uint32_t)i;
+
+		int thread_num = omp_get_thread_num();
+		uint8_t* thread_encode_buf = (uint8_t*)encode_buf + max_block_byte_size * thread_num;
+		uint8_t* thread_decode_buf = (uint8_t*)block_buf + complete_block_size * thread_num;
+
+		uint64_t encode_size = max_block_byte_size;
+		status = micro_tiff_LoadBlock(_hdl, image_number, block_no, encode_size, thread_encode_buf);
+		if (status != ErrorCode::STATUS_OK) {
+			continue;
+		}
+
+		switch (image_info.compression)
+		{
+		case COMPRESSION_JPEG:
+			status = ErrorCode::ERR_COMPRESS_TYPE_NOTSUPPORT;
+			//int width, height, samples;
+			//status = jpeg_decompress((unsigned char*)thread_decode_buf, (unsigned char*)thread_encode_buf, (unsigned long)encode_size, &width, &height, &samples);
+			//size = (uint64_t)width * height * samples;
+			break;
+		case COMPRESSION_LZW:
+			try
+			{
+				uint64_t decode_size = LZWDecode(thread_encode_buf, encode_size, thread_decode_buf, block_size);
+				if (decode_size == block_size)
+					status = ErrorCode::STATUS_OK;
+				else
+					status = ErrorCode::ERR_BUFFER_SIZE_ERROR;
+				if (status == ErrorCode::STATUS_OK && image_info.predictor == PREDICTOR_HORIZONTAL)
+				{
+					int hori_status = horizontal_acc(thread_decode_buf, block_height, block_width, image_info.image_byte_count, image_info.samples_per_pixel, is_big_endian);
+					if (hori_status != 0)
+					{
+						status = ErrorCode::ERR_DECOMPRESS_LZW_FAILED;
+						break;
+					}
+				}
+			}
+			catch (exception e)
+			{
+				status = ErrorCode::ERR_DECOMPRESS_LZW_FAILED;
+				break;
+			}
+			break;
+		case COMPRESSION_ADOBE_DEFLATE:
+		case COMPRESSION_DEFLATE:
+		{
+			status = ErrorCode::ERR_COMPRESS_TYPE_NOTSUPPORT;
+			//size = block_size;
+			//int zlib_status = uncompress((unsigned char*)thread_decode_buf, (unsigned long*)&size, (unsigned char*)thread_encode_buf, (unsigned long)encode_size);
+			//if (zlib_status != 0)
+			//{
+			//	status = ErrorCode::ERR_DECOMPRESS_ZLIB_FAILED;
+			//	break;
+			//}
+		}
+		break;
+		default:
+			status = ErrorCode::ERR_COMPRESS_TYPE_NOTSUPPORT;
+			break;
+		}
+
+		if (status == ErrorCode::STATUS_OK)
+		{
+			for (uint32_t h = 0; h < block_height; h++)
+			{
+				uint8_t* src_ptr = (uint8_t*)thread_decode_buf + h * block_width * image_info.samples_per_pixel;
+				uint8_t* dst_ptr = (uint8_t*)image_data + (row * image_info.block_height + h) * stride + column * complete_block_pixel_width;
+				memcpy_s(dst_ptr, block_width * image_info.samples_per_pixel, src_ptr, block_width * image_info.samples_per_pixel);
 			}
 		}
 	}
+
 	return status;
 }
 

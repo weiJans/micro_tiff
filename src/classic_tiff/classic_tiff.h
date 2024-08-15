@@ -1,7 +1,5 @@
 #pragma once
 #include "classic_def.h"
-#include <map>
-#include <vector>
 
 class tiff_single
 {
@@ -18,6 +16,5 @@ public:
 
 private:
 	int32_t _hdl;
-	std::map<uint32_t, tiff::SingleImageInfo> _infos;
 	tiff::OpenMode _openMode;
 };

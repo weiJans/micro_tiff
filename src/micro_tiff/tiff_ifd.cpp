@@ -36,7 +36,7 @@ tiff_ifd::tiff_ifd(bool is_big_tiff, bool is_big_endian, FILE* hdl)
 	_big_tiff = is_big_tiff;
 	_big_endian = is_big_endian;
 	is_purged = false;
-	current_ifd_offset = 0;	
+	current_ifd_offset = 0;
 	big_block_byte_size = nullptr;
 	big_block_offset = nullptr;
 	classic_block_byte_size = nullptr;
@@ -98,7 +98,7 @@ void tiff_ifd::GenerateTagList(uint64_t pos_offset, uint64_t pos_byte_count)
 
 	uint64_t block_offset = pos_offset;
 	uint64_t block_bytes = pos_byte_count;
-	
+
 	//size_t extra_tag_size = is_width_eq_block ? 3 : 4;
 	if (_big_tiff) {
 		big_tag[TIFFTAG_IMAGEWIDTH] = { TIFFTAG_IMAGEWIDTH, TIFF_SHORT, 1, info.image_width };
@@ -107,7 +107,7 @@ void tiff_ifd::GenerateTagList(uint64_t pos_offset, uint64_t pos_byte_count)
 		big_tag[TIFFTAG_COMPRESSION] = { TIFFTAG_COMPRESSION, TIFF_SHORT, 1, info.compression };
 		big_tag[TIFFTAG_PHOTOMETRIC] = { TIFFTAG_PHOTOMETRIC, TIFF_SHORT, 1, info.photometric };
 		big_tag[TIFFTAG_SAMPLESPERPIXEL] = { TIFFTAG_SAMPLESPERPIXEL,TIFF_SHORT,1,info.samples_per_pixel };
-		big_tag[TIFFTAG_PLANARCONFIG] = { TIFFTAG_PLANARCONFIG, TIFF_SHORT, 1, info.planarconfig };		
+		big_tag[TIFFTAG_PLANARCONFIG] = { TIFFTAG_PLANARCONFIG, TIFF_SHORT, 1, info.planarconfig };
 
 
 		if (block_count <= 1)
@@ -118,7 +118,7 @@ void tiff_ifd::GenerateTagList(uint64_t pos_offset, uint64_t pos_byte_count)
 
 		if (is_width_eq_block)
 		{
-			big_tag[TIFFTAG_ROWSPERSTRIP] = { TIFFTAG_ROWSPERSTRIP ,TIFF_LONG, 1, info.block_height };			
+			big_tag[TIFFTAG_ROWSPERSTRIP] = { TIFFTAG_ROWSPERSTRIP ,TIFF_LONG, 1, info.block_height };
 			big_tag[TIFFTAG_STRIPOFFSETS] = { TIFFTAG_STRIPOFFSETS, TIFF_LONG8, block_count, block_offset };
 			big_tag[TIFFTAG_STRIPBYTECOUNTS] = { TIFFTAG_STRIPBYTECOUNTS,TIFF_LONG8, block_count, block_bytes };
 		}
@@ -302,7 +302,7 @@ TiffErrorCode tiff_ifd::load_ifd(uint64_t ifd_offset)
 		return TiffErrorCode::TIFF_ERR_NO_IFD_FOUND;
 	}
 	else {
-	 	int seek = _fseeki64(_tiff_hdl, ifd_offset, SEEK_SET);
+		int seek = _fseeki64(_tiff_hdl, ifd_offset, SEEK_SET);
 		if (seek != 0)
 			return TiffErrorCode::TIFF_ERR_IFD_OUT_OF_DIRECTORY;
 	}
@@ -454,11 +454,11 @@ int32_t tiff_ifd::wr_block(uint32_t block_no, uint64_t buf_size, uint8_t* buf)
 		return TiffErrorCode::TIFF_ERR_BLOCK_OUT_OF_RANGE;
 	}
 
-	if (_big_tiff){
+	if (_big_tiff) {
 		big_block_offset[block_no] = cur_offset;
 		big_block_byte_size[block_no] = buf_size;
 	}
-	else{
+	else {
 		classic_block_offset[block_no] = (uint32_t)cur_offset;
 		classic_block_byte_size[block_no] = (uint32_t)buf_size;
 	}
@@ -477,21 +477,32 @@ int32_t tiff_ifd::wr_block(uint32_t block_no, uint64_t buf_size, uint8_t* buf)
 //	return TiffErrorCode::TIFF_STATUS_OK;
 //}
 
-int32_t tiff_ifd::rd_block(uint32_t block_no, uint64_t &buf_size, uint8_t* buf)
+int32_t tiff_ifd::rd_block(uint32_t block_no, uint64_t& buf_size, uint8_t* buf)
 {
 	uint64_t cur_offset;
 	if (block_no >= block_count) {
 		return TiffErrorCode::TIFF_ERR_BLOCK_OUT_OF_RANGE;
 	}
 
+	uint64_t block_byte_size = 0;
 	if (_big_tiff) {
 		cur_offset = big_block_offset[block_no];
-		buf_size = big_block_byte_size[block_no];
+		block_byte_size = big_block_byte_size[block_no];
 	}
 	else {
 		cur_offset = classic_block_offset[block_no];
-		buf_size = classic_block_byte_size[block_no];
+		block_byte_size = classic_block_byte_size[block_no];
 	}
+	if (buf == nullptr)
+	{
+		buf_size = block_byte_size;
+		return TiffErrorCode::TIFF_STATUS_OK;
+	}
+
+	if (buf_size < block_byte_size)
+		return TiffErrorCode::TIFF_ERR_BAD_PARAMETER_VALUE;
+
+	buf_size = block_byte_size;
 	int seek = _fseeki64(_tiff_hdl, cur_offset, SEEK_SET);
 	if (seek != 0)
 		return TiffErrorCode::TIFF_ERR_BLOCK_OFFSET_OUT_OF_RANGE;
@@ -639,7 +650,7 @@ TiffErrorCode tiff_ifd::get_tag(uint16_t tag_id, void* buf)
 
 		if (size > BIG_TIFF_OFFSET_SIZE)
 		{
-			int seek = _fseeki64(_tiff_hdl, tag.value, SEEK_SET);			
+			int seek = _fseeki64(_tiff_hdl, tag.value, SEEK_SET);
 			if (seek != 0) {
 				return TiffErrorCode::TIFF_ERR_SEEK_FILE_POINTER_FAILED;
 			}

@@ -1,12 +1,41 @@
 // classic_tiff_demo.cpp : This file contains the 'main' function. Program execution begins and ends there.
 //
 
+#ifdef _WIN32
+#include <Windows.h>
+#elif
+#include <unistd.h>
+#include <limits.h>
+#endif // _WIN32
 #include <iostream>
+#include <string>
+#include <stdio.h>
 #include "..\..\src\classic_tiff\classic_tiff_library.h"
+
+std::wstring get_executable_path() {
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH];
+    GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    std::string::size_type pos = std::wstring(buffer).find_last_of(L"\\/");
+    return std::wstring(buffer).substr(0, pos);
+#elif
+    wchar_t buffer[MAX_PATH];
+    ssize_t len = readlink("/proc/self/exe", reinterpret_cast<char*>(buffer), sizeof(buffer) - 1);
+    if (len != -1) {
+        buffer[len] = L'\0';
+        std::string::size_type pos = std::wstring(buffer).find_last_of("\\/");
+        return std::wstring(buffer).substr(0, pos);
+    }
+    return "";
+#endif // _WIN32
+}
 
 void tiff_read_example()
 {
-    int32_t hdl = open_tiff(L"classic_tiff_read_sample.tif", tiff::OpenMode::READ_ONLY_MODE);
+    std::wstring path = get_executable_path();
+    path += L"\\classic_tiff_read_sample.tif";
+
+    int32_t hdl = open_tiff(path.c_str(), tiff::OpenMode::READ_ONLY_MODE);
     if (hdl < 0)
     {
         std::cout << "Open file failed with error : " << hdl << std::endl;
@@ -53,7 +82,10 @@ void tiff_read_performance()
 
 void tiff_write_example()
 {
-    int32_t hdl = open_tiff(L"classic_tiff_write_example.tif", tiff::OpenMode::CREATE_MODE);
+    std::wstring path = get_executable_path();
+    path += L"\\classic_tiff_write_example.tif";
+
+    int32_t hdl = open_tiff(path.c_str(), tiff::OpenMode::CREATE_MODE);
     if (hdl < 0)
     {
         std::cout << "Create file failed with error : " << hdl << std::endl;
@@ -113,6 +145,7 @@ int main()
     tiff_write_example();
     tiff_read_example();
     std::cout << "Hello World!\n";
+    std::cin.get();
 }
 
 // Run program: Ctrl + F5 or Debug > Start Without Debugging menu
